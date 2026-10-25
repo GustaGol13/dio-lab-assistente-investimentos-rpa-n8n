@@ -1,0 +1,186 @@
+{
+  "name": "Assistente de Investimentos - IA Generativa (Desafio)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistente-investimentos-ia",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c86dc2f3-d318-4953-9c6a-7eeca3b0d72e",
+      "name": "Webhook - Clientes",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        40,
+        100
+      ],
+      "webhookId": "assistente-investimentos-ia"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://digitalinnovationone.github.io/dio-lab-assistente-investimentos-rpa-n8n/data.csv",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "ef024631-e84f-47b0-88cc-e3f145b88788",
+      "name": "Carregar data.csv",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Obter clientes recebidos pelo Webhook\nconst webhookItem = $('Webhook - Clientes').first();\nconst rawBody = webhookItem.json.body ?? webhookItem.json;\nconst clientes = Array.isArray(rawBody) ? rawBody : (rawBody.clientes ?? rawBody.data?.clientes ?? []);\n\nif (!Array.isArray(clientes) || clientes.length === 0) {\n  throw new Error('Nenhum cliente válido recebido. Esperado: { \"clientes\": [...] }');\n}\n\n// 2. Obter base de investimentos\nlet csvText = '';\ntry {\n  const httpItem = $('Carregar data.csv').first();\n  if (typeof httpItem.json.data === 'string') csvText = httpItem.json.data;\n  else if (typeof httpItem.json === 'string') csvText = httpItem.json;\n} catch (e) {}\n\nif (!csvText || !csvText.includes('perfil')) {\n  csvText = `perfil,produto,minimo,rentabilidade\nConservador,Poupança,100,6.2%\nConservador,CDB Liquidez Diária,1000,12.5%\nConservador,Tesouro Selic,500,13.0%\nModerado,CDB Prefixado,1000,14.0%\nModerado,Fundo Multimercado,5000,16.0%\nModerado,Tesouro IPCA+,1000,IPCA+6.0%\nArrojado,Ações ETF,500,Variável\nArrojado,Fundo de Ações,10000,Variável\nArrojado,Criptomoedas,100,Variável`;\n}\n\n// 3. Parser do CSV\nconst linhasCsv = csvText.trim().split(/\\r?\\n/);\nconst catalogo = [];\nfor (let i = 1; i < linhasCsv.length; i++) {\n  const c = linhasCsv[i].split(',').map(s => s.trim());\n  if (c.length >= 4) {\n    catalogo.push({\n      perfil: c[0],\n      produto: c[1],\n      minimo: parseFloat(c[2]) || 0,\n      rentabilidade: c[3]\n    });\n  }\n}\n\nfunction parseSaldo(v) {\n  if (typeof v === 'number') return v;\n  if (!v) return 0;\n  const num = parseFloat(String(v).replace(/[^\\d,.-]/g, '').replace(/\\./g, '').replace(',', '.'));\n  return isNaN(num) ? 0 : num;\n}\n\nfunction fmtBRL(num) {\n  return num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });\n}\n\n// 4. Retornar um item por cliente para processamento individual pela IA\nreturn clientes.map(cliente => {\n  const saldoNum = parseSaldo(cliente.saldo);\n  const perfil = String(cliente.perfil || '').trim();\n  const produtosDoPerfil = catalogo.filter(p => p.perfil.toLowerCase() === perfil.toLowerCase());\n  const produtosElegiveis = produtosDoPerfil.filter(p => saldoNum >= p.minimo);\n\n  const produtosFormatados = (produtosElegiveis.length > 0 ? produtosElegiveis : produtosDoPerfil)\n    .map(p => `- ${p.produto} (Aporte mínimo: ${fmtBRL(p.minimo)}, Rentabilidade esperada: ${p.rentabilidade})`)\n    .join('\\n');\n\n  const prompt = `Você é um assessor financeiro de investimentos especializado.\nEscreva uma recomendação de investimentos personalizada, amigável e profissional para o cliente abaixo:\n\n- Nome: ${cliente.nome}\n- Perfil de Investidor: ${perfil}\n- Saldo Disponível para Aporte: ${cliente.saldo}\n- Produtos Disponíveis e Elegíveis:\n${produtosFormatados}\n\nInstruções para o texto:\n1. Cumprimente o investidor pelo primeiro nome com simpatia.\n2. Reconheça o perfil de risco dele e justifique a estratégia recomendada.\n3. Sugira as opções mais vantajosas da lista acima, comentando a rentabilidade e o aporte mínimo.\n4. Finalize com um conselho inteligente para potencializar o patrimônio e inclua um breve aviso legal sobre riscos de mercado.`;\n\n  return {\n    json: {\n      nome: cliente.nome,\n      email: cliente.email,\n      saldo: cliente.saldo,\n      saldo_numerico: saldoNum,\n      perfil: perfil,\n      produtos_elegiveis: produtosElegiveis,\n      prompt_ia: prompt\n    }\n  };\n});\n"
+      },
+      "id": "92820b52-ed86-4a6b-b777-e5e4049c22b6",
+      "name": "Preparar Contexto por Cliente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt_ia }}",
+        "hasOutputParser": false
+      },
+      "id": "febd7909-762e-4aea-aee2-5f4f1a6d0a3a",
+      "name": "Agente / LLM Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        760,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "gemini-1.5-flash",
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "id": "1d95fd32-4179-4840-985d-8f67792d12a5",
+      "name": "Google Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all().map(i => i.json);\n\nconst formatados = items.map(c => ({\n  nome: c.nome,\n  email: c.email,\n  perfil: c.perfil,\n  saldo_original: c.saldo,\n  saldo_numerico: c.saldo_numerico,\n  total_produtos_elegiveis: (c.produtos_elegiveis || []).length,\n  mensagem_ia: c.response?.text || c.text || c.output || c.mensagem || \"Mensagem gerada com sucesso pela IA.\"\n}));\n\nreturn [{\n  json: {\n    status: 'sucesso',\n    tipo_execucao: 'Desafio Completo - IA Generativa (LLM)',\n    timestamp: new Date().toISOString(),\n    total_processado: formatados.length,\n    resultados: formatados\n  }\n}];\n"
+      },
+      "id": "892b9a0b-527a-4046-a6ea-2e09a5014c45",
+      "name": "Consolidar Resultados",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "c4568b9e-1b99-4337-b609-cc647372eda3",
+      "name": "Responder ao Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1280,
+        100
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook - Clientes": {
+      "main": [
+        [
+          {
+            "node": "Carregar data.csv",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carregar data.csv": {
+      "main": [
+        [
+          {
+            "node": "Preparar Contexto por Cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Contexto por Cliente": {
+      "main": [
+        [
+          {
+            "node": "Agente / LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agente / LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agente / LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Consolidar Resultados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consolidar Resultados": {
+      "main": [
+        [
+          {
+            "node": "Responder ao Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

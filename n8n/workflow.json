@@ -1,0 +1,133 @@
+{
+  "name": "Assistente de Investimentos - RPA MVP",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistente-investimentos",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "47c7f44d-1d85-4bc4-a6ba-75bc208de369",
+      "name": "Webhook - Clientes",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        40,
+        100
+      ],
+      "webhookId": "assistente-investimentos"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://digitalinnovationone.github.io/dio-lab-assistente-investimentos-rpa-n8n/data.csv",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "239abe72-1c22-44d9-aee8-78c1f95a8681",
+      "name": "Carregar data.csv",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Obter clientes recebidos pelo Webhook\nconst webhookItem = $('Webhook - Clientes').first();\nconst rawBody = webhookItem.json.body ?? webhookItem.json;\nconst clientes = Array.isArray(rawBody) ? rawBody : (rawBody.clientes ?? rawBody.data?.clientes ?? []);\n\nif (!Array.isArray(clientes) || clientes.length === 0) {\n  throw new Error('Nenhum cliente válido recebido no payload. Formato esperado: { \"clientes\": [...] }');\n}\n\n// 2. Obter base de investimentos lida do docs/data.csv via nó HTTP Request\nlet csvText = '';\ntry {\n  const httpItem = $('Carregar data.csv').first();\n  if (typeof httpItem.json.data === 'string') {\n    csvText = httpItem.json.data;\n  } else if (typeof httpItem.json === 'string') {\n    csvText = httpItem.json;\n  }\n} catch (err) {}\n\n// Fallback robusto caso haja instabilidade de rede ao acessar o GitHub Pages\nif (!csvText || !csvText.includes('perfil')) {\n  csvText = `perfil,produto,minimo,rentabilidade\nConservador,Poupança,100,6.2%\nConservador,CDB Liquidez Diária,1000,12.5%\nConservador,Tesouro Selic,500,13.0%\nModerado,CDB Prefixado,1000,14.0%\nModerado,Fundo Multimercado,5000,16.0%\nModerado,Tesouro IPCA+,1000,IPCA+6.0%\nArrojado,Ações ETF,500,Variável\nArrojado,Fundo de Ações,10000,Variável\nArrojado,Criptomoedas,100,Variável`;\n}\n\n// 3. Parser do CSV\nconst linhasCsv = csvText.trim().split(/\\r?\\n/);\nconst catalogoInvestimentos = [];\nfor (let i = 1; i < linhasCsv.length; i++) {\n  const partes = linhasCsv[i].split(',').map(s => s.trim());\n  if (partes.length >= 4) {\n    catalogoInvestimentos.push({\n      perfil: partes[0],\n      produto: partes[1],\n      minimo: parseFloat(partes[2]) || 0,\n      rentabilidade: partes[3]\n    });\n  }\n}\n\n// Funções auxiliares de sanitização e formatação\nfunction extrairSaldoNumerico(valor) {\n  if (typeof valor === 'number') return valor;\n  if (!valor) return 0;\n  const limpo = String(valor).replace(/[^\\d,.-]/g, '').replace(/\\./g, '').replace(',', '.');\n  const num = parseFloat(limpo);\n  return isNaN(num) ? 0 : num;\n}\n\nfunction formatarMoeda(num) {\n  return num.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });\n}\n\n// 4. Cruzamento de dados de clientes com opções de investimento\nconst recomendacoes = clientes.map(cliente => {\n  const nomeCompleto = String(cliente.nome ?? 'Investidor(a)').trim();\n  const primeiroNome = nomeCompleto.split(/\\s+/)[0];\n  const perfil = String(cliente.perfil ?? '').trim();\n  const saldoNum = extrairSaldoNumerico(cliente.saldo);\n  const saldoFormatado = formatarMoeda(saldoNum);\n\n  // Produtos do perfil do cliente\n  const produtosDoPerfil = catalogoInvestimentos.filter(\n    p => p.perfil.toLowerCase() === perfil.toLowerCase()\n  );\n\n  // Produtos elegíveis pelo saldo\n  const produtosElegiveis = produtosDoPerfil.filter(p => saldoNum >= p.minimo);\n\n  let produtoDestaque = null;\n  let mensagem = '';\n\n  const listaFormatada = produtosElegiveis.length > 0\n    ? produtosElegiveis.map(p => `• ${p.produto} (Aporte mín.: ${formatarMoeda(p.minimo)} | Rentabilidade: ${p.rentabilidade})`).join('\\n')\n    : `• Nenhum produto atinge o mínimo no momento. Sugerimos aportes graduais para a opção de entrada: ${produtosDoPerfil[0]?.produto} (mín. ${formatarMoeda(produtosDoPerfil[0]?.minimo || 0)}).`;\n\n  if (perfil.toLowerCase() === 'conservador') {\n    produtoDestaque = produtosElegiveis.find(p => p.produto.includes('CDB Liquidez') || p.produto.includes('Tesouro')) || produtosDoPerfil[0];\n    mensagem = `Olá, ${primeiroNome}!\\n` +\n      `Identificamos seu perfil Conservador com saldo disponível de ${cliente.saldo || saldoFormatado}.\\n` +\n      `Para quem prioriza segurança, previsibilidade e reserva de emergência com liquidez diária, ` +\n      `selecionamos as seguintes opções adequadas à sua carteira:\\n\\n` +\n      `${listaFormatada}\\n\\n` +\n      `💡 Destaque da Assessoria: ${produtoDestaque?.produto} com rentabilidade de ${produtoDestaque?.rentabilidade}.\\n` +\n      `Uma excelente alternativa para proteger seu patrimônio com ganhos acima da poupança tradicional.\\n\\n` +\n      `*Aviso legal: Rentabilidade passada não é garantia de resultados futuros. Consulte sempre seu assessor.*`;\n  } else if (perfil.toLowerCase() === 'moderado') {\n    produtoDestaque = produtosElegiveis.find(p => p.produto.includes('Tesouro IPCA+') || p.produto.includes('CDB Prefixado')) || produtosDoPerfil[0];\n    mensagem = `Olá, ${primeiroNome}!\\n` +\n      `Identificamos seu perfil Moderado com saldo disponível de ${cliente.saldo || saldoFormatado}.\\n` +\n      `Seu perfil busca a combinação ideal entre segurança patrimonial e ganhos reais acima da inflação no médio prazo.\\n\\n` +\n      `${listaFormatada}\\n\\n` +\n      `💡 Destaque da Assessoria: ${produtoDestaque?.produto} com rentabilidade de ${produtoDestaque?.rentabilidade}.\\n` +\n      `A diversificação entre crédito privado e títulos indexados ao IPCA potencializa sua rentabilidade mantendo o risco equilibrado.\\n\\n` +\n      `*Aviso legal: Rentabilidade passada não é garantia de resultados futuros. Avalie seus objetivos de médio prazo.*`;\n  } else if (perfil.toLowerCase() === 'arrojado') {\n    produtoDestaque = produtosElegiveis.find(p => p.produto.includes('Fundo de Ações') || p.produto.includes('Ações ETF')) || produtosDoPerfil[0];\n    mensagem = `Olá, ${primeiroNome}!\\n` +\n      `Identificamos seu perfil Arrojado com saldo disponível de ${cliente.saldo || saldoFormatado}.\\n` +\n      `Investidores arrojados toleram volatilidade em troca de expressivo potencial de valorização no longo prazo.\\n\\n` +\n      `${listaFormatada}\\n\\n` +\n      `💡 Destaque da Assessoria: ${produtoDestaque?.produto} (Rentabilidade: ${produtoDestaque?.rentabilidade}).\\n` +\n      `Alocar em renda variável e fundos possibilita capturar o crescimento das maiores empresas do mercado.\\n\\n` +\n      `*Aviso legal: Ativos de renda variável possuem oscilação de cota e risco de perda. Mantenha foco no longo prazo.*`;\n  } else {\n    mensagem = `Olá, ${primeiroNome}! Confirmamos seu saldo de ${cliente.saldo}. Favor entrar em contato para atualizar seu questionário de perfil de investidor.`;\n  }\n\n  return {\n    nome: cliente.nome,\n    email: cliente.email,\n    perfil: perfil,\n    saldo_original: cliente.saldo,\n    saldo_numerico: saldoNum,\n    produto_destaque: produtoDestaque ? produtoDestaque.produto : null,\n    rentabilidade_destaque: produtoDestaque ? produtoDestaque.rentabilidade : null,\n    total_produtos_elegiveis: produtosElegiveis.length,\n    produtos_elegiveis: produtosElegiveis,\n    mensagem: mensagem\n  };\n});\n\nreturn [{ json: { recomendacoes } }];\n"
+      },
+      "id": "fccd205a-b9cc-44ed-bc17-de78c6468bde",
+      "name": "Cruzar Dados & Gerar Mensagens",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst recomendacoes = data.recomendacoes || [];\n\nconst contagemPerfis = { Conservador: 0, Moderado: 0, Arrojado: 0, Outros: 0 };\nlet patrimonioTotal = 0;\n\nfor (const r of recomendacoes) {\n  const p = (r.perfil || '').toLowerCase();\n  if (p === 'conservador') contagemPerfis.Conservador++;\n  else if (p === 'moderado') contagemPerfis.Moderado++;\n  else if (p === 'arrojado') contagemPerfis.Arrojado++;\n  else contagemPerfis.Outros++;\n  patrimonioTotal += (r.saldo_numerico || 0);\n}\n\nreturn [{\n  json: {\n    status: 'sucesso',\n    tipo_execucao: 'MVP - Templates Dinâmicos por Perfil',\n    timestamp: new Date().toISOString(),\n    total_processado: recomendacoes.length,\n    distribuicao_perfis: contagemPerfis,\n    patrimonio_total_analisado: patrimonioTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),\n    resultados: recomendacoes\n  }\n}];\n"
+      },
+      "id": "bb195a5a-3e07-4e37-8509-e754d9eed902",
+      "name": "Resumo da Execução",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "82d54c86-1c2d-40ef-bfef-fa3177f01c1a",
+      "name": "Responder ao Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1000,
+        100
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook - Clientes": {
+      "main": [
+        [
+          {
+            "node": "Carregar data.csv",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carregar data.csv": {
+      "main": [
+        [
+          {
+            "node": "Cruzar Dados & Gerar Mensagens",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cruzar Dados & Gerar Mensagens": {
+      "main": [
+        [
+          {
+            "node": "Resumo da Execução",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumo da Execução": {
+      "main": [
+        [
+          {
+            "node": "Responder ao Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
